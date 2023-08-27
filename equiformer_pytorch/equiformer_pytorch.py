@@ -176,7 +176,7 @@ class Linear(nn.Module):
         out = {}
 
         for degree, weight in zip(self.degrees, self.weights):
-            out[degree] = einsum(x[degree], weight, '... d m, d e -> ... e m')
+            out[degree] = einsum(x[degree] + 1e-06, weight, '... d m, d e -> ... e m')
 
         return out
 
