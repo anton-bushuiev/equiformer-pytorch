@@ -1159,6 +1159,8 @@ class Equiformer(nn.Module):
 
         edge_info = EdgeInfo(neighbor_indices, neighbor_mask, edges)
 
+        print(edge_info)
+
         x = feats
 
         # project in
