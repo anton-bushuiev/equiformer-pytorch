@@ -610,6 +610,9 @@ class L2DistAttention(nn.Module):
         if exists(neighbor_mask):
             neighbor_mask = rearrange(neighbor_mask, 'b i j -> b 1 i j')
 
+            if self.attend_self:
+                neighbor_mask = F.pad(neighbor_mask, (1, 0), value = True)
+
         features = self.prenorm(features)
 
         queries = self.to_q(features)
@@ -650,11 +653,7 @@ class L2DistAttention(nn.Module):
 
             if not is_degree_zero:
                 sim = sim.sum(dim = -1)
-
-            if exists(neighbor_mask):
-                left_pad_needed = int(self.attend_self)
-                padded_neighbor_mask = F.pad(neighbor_mask, (left_pad_needed, 0), value = True)
-                sim = sim.masked_fill(~padded_neighbor_mask, -torch.finfo(sim.dtype).max)
+                sim = sim.masked_fill(~neighbor_mask, -torch.finfo(sim.dtype).max)
 
             attn = sim.softmax(dim = -1)
             out = einsum(attn, v, f'b h i j, {kv_einsum_eq} -> b h i d m')
@@ -697,6 +696,8 @@ class MLPAttention(nn.Module):
 
         self.single_headed_kv = single_headed_kv
         value_hidden_fiber = hidden_fiber if not single_headed_kv else dim_head
+
+        self.attend_self = attend_self
 
         self.scale = tuple(dim ** -0.5 for dim in dim_head)
         self.heads = heads
@@ -766,6 +767,14 @@ class MLPAttention(nn.Module):
     ):
         one_headed_kv = self.single_headed_kv
 
+        _, neighbor_mask, _ = edge_info
+
+        if exists(neighbor_mask):
+            if self.attend_self:
+                neighbor_mask = F.pad(neighbor_mask, (1, 0), value = True)
+
+            neighbor_mask = rearrange(neighbor_mask, '... -> ... 1')
+
         features = self.prenorm(features)
 
         intermediate = self.to_attn_and_v(
@@ -788,6 +797,10 @@ class MLPAttention(nn.Module):
             attn_intermediate = rearrange(attn_intermediate, '... 1 -> ...')
             attn_logits = fn(attn_intermediate)
             attn_logits = attn_logits * scale
+
+            if exists(neighbor_mask):
+                attn_logits = attn_logits.masked_fill(~neighbor_mask, -torch.finfo(attn_logits.dtype).max)
+
             attn = attn_logits.softmax(dim = -2) # (batch, source, target, heads)
             attentions.append(attn)
 
@@ -993,8 +1006,7 @@ class Equiformer(nn.Module):
         mask = None,
         adj_mat = None,
         edges = None,
-        return_pooled = False,
-        neighbor_mask = None,
+        return_pooled = False
     ):
         _mask, device = mask, self.device
 
@@ -1109,21 +1121,15 @@ class Equiformer(nn.Module):
         modified_rel_dist = rel_dist.clone()
         max_value = get_max_value(modified_rel_dist) # for masking out nodes from being considered as neighbors
 
+        # make sure padding tokens are not considered when ordering by relative distance
+
+        if exists(mask):
+            modified_rel_dist = modified_rel_dist.masked_fill(~mask, max_value)
+
         # use sparse neighbor mask to assign priority of bonded
 
         if exists(sparse_neighbor_mask):
             modified_rel_dist = modified_rel_dist.masked_fill(sparse_neighbor_mask, 0.)
-
-        # neighbors
-
-        if exists(neighbor_mask):
-            neighbor_mask = remove_self(neighbor_mask)
-
-            max_neighbors = neighbor_mask.sum(dim = -1).max().item()
-            if max_neighbors > neighbors:
-                print(f'neighbor_mask shows maximum number of neighbors as {max_neighbors} but specified number of neighbors is {neighbors}')
-
-            modified_rel_dist = modified_rel_dist.masked_fill(~neighbor_mask, max_value)
 
         # if number of local neighbors by distance is set to 0, then only fetch the sparse neighbors defined by adjacency matrix
 
