@@ -552,7 +552,8 @@ class L2DistAttention(nn.Module):
         splits = 4,
         num_linear_attn_heads = 0,
         init_out_zero = True,
-        gate_attn_head_outputs = True
+        gate_attn_head_outputs = True,
+        store_last_forward_attn = False
     ):
         super().__init__()
         num_degrees = len(fiber)
@@ -608,6 +609,10 @@ class L2DistAttention(nn.Module):
         if init_out_zero:
             self.to_out.init_zero_()
 
+        # store last forward attention
+            
+        self.store_last_forward_attn = store_last_forward_attn
+
     @beartype
     def forward(
         self,
@@ -622,6 +627,8 @@ class L2DistAttention(nn.Module):
 
         device, dtype = get_tensor_device_and_dtype(features)
         neighbor_indices, neighbor_mask, edges = edge_info
+
+        self.last_forward_attn = [] if self.store_last_forward_attn else None
 
         if exists(neighbor_mask):
             neighbor_mask = rearrange(neighbor_mask, 'b i j -> b 1 i j')
@@ -689,6 +696,12 @@ class L2DistAttention(nn.Module):
                 out = out * gate
 
             outputs[degree] = rearrange(out, 'b h n d m -> b n (h d) m')
+
+            if exists(self.last_forward_attn):
+                self.last_forward_attn.append(attn)
+
+        if exists(self.last_forward_attn):
+            self.last_forward_attn = torch.stack(self.last_forward_attn)
 
         if self.has_linear_attn:
             lin_attn_out = self.linear_attn(features[0], mask = mask)
@@ -923,6 +936,7 @@ class Equiformer(nn.Module):
         num_adj_degrees_embed = None,
         adj_dim = 0,
         max_sparse_neighbors = float('inf'),
+        store_last_forward_attn = False,    # store attention coefficients of the last forward pass
         **kwargs
     ):
         super().__init__()
@@ -1016,6 +1030,7 @@ class Equiformer(nn.Module):
                     single_headed_kv = single_headed_kv,
                     radial_hidden_dim = radial_hidden_dim,
                     gate_attn_head_outputs = gate_attn_head_outputs,
+                    store_last_forward_attn = store_last_forward_attn,
                     **kwargs
                 ),
                 FeedForward(self.dim, include_htype_norms = ff_include_htype_norms)
@@ -1038,6 +1053,10 @@ class Equiformer(nn.Module):
 
         self.basis = get_basis(self.num_degrees - 1)
 
+        # store last forward attention
+
+        self.store_last_forward_attn = store_last_forward_attn
+
     @property
     def basis(self):
         out = dict()
@@ -1055,6 +1074,45 @@ class Equiformer(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
+
+    @property
+    def last_forward_attn(self):
+
+        # get attention from each layer
+
+        attn = []
+        for layer in self.layers.blocks:
+            if exists(layer[0].last_forward_attn):
+                attn.append(layer[0].last_forward_attn)
+        attn = torch.stack(attn)
+
+        # get edge index from last forward (attention does not remember which neighbors are which)
+
+        neigh = self.last_forward_neighbor_indices
+
+        # add self loops to edge index if attention used self loops
+
+        if self.layers.blocks[0][0].attend_self:  # 1st layer attention module
+            self_loops = torch.arange(neigh.shape[-2])
+            self_loops = rearrange(self_loops, 'n -> 1 n 1')
+            neigh = torch.cat([self_loops, neigh], dim=-1)
+
+        # transform to pairwise attention
+            
+        attn = rearrange(attn, 'l d b h i n -> l d h b i n')
+
+        pairwise_shape = list(attn.shape)
+        pairwise_shape[-1] = pairwise_shape[-2]
+        attn_pairwise = torch.full(pairwise_shape, float('nan'))
+        
+        for b in range(neigh.shape[0]):
+            for i in range(neigh.shape[1]):
+                for j_pos, j in enumerate(neigh[b, i, :]):
+                    attn_pairwise[..., b, i, j] = attn[..., b, i, j_pos]
+
+        attn_pairwise = rearrange(attn_pairwise, 'l d h b i j -> b l d h i j')        
+
+        return attn_pairwise  # batch, layer, degree, head, node, node
 
     @beartype
     def forward(
@@ -1215,6 +1273,9 @@ class Equiformer(nn.Module):
 
         if exists(edges):
             edges = batched_index_select(edges, nearest_indices, dim = 2)
+
+        if self.store_last_forward_attn:
+            self.last_forward_neighbor_indices = neighbor_indices
 
         # embed relative distances
 
