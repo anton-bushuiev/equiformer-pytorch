@@ -654,7 +654,7 @@ class L2DistAttention(nn.Module):
 
         gates = (None,) * len(self.heads)
 
-        if exists(self.attn_head_gates):
+        if hasattr(self, 'attn_head_gates') and exists(self.attn_head_gates):
             gates = self.attn_head_gates(features[0]).split(self.heads, dim = -4)
 
         # single headed vs not
@@ -851,7 +851,7 @@ class MLPAttention(nn.Module):
 
         gates = (None,) * len(self.heads)
 
-        if exists(self.attn_head_gates):
+        if hasattr(self, 'attn_head_gates') and exists(self.attn_head_gates):
             gates = self.attn_head_gates(features[0]).split(self.heads, dim = -3)
 
         # process the attention branch
