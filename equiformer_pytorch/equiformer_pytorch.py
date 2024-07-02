@@ -628,7 +628,7 @@ class L2DistAttention(nn.Module):
         device, dtype = get_tensor_device_and_dtype(features)
         neighbor_indices, neighbor_mask, edges = edge_info
 
-        self.last_forward_attn = [] if self.store_last_forward_attn else None
+        self.last_forward_attn = [] if hasattr(self, 'store_last_forward_attn') and self.store_last_forward_attn else None
 
         if exists(neighbor_mask):
             neighbor_mask = rearrange(neighbor_mask, 'b i j -> b 1 i j')
@@ -1274,7 +1274,7 @@ class Equiformer(nn.Module):
         if exists(edges):
             edges = batched_index_select(edges, nearest_indices, dim = 2)
 
-        if self.store_last_forward_attn:
+        if hasattr(self, 'store_last_forward_attn') and self.store_last_forward_attn:
             self.last_forward_neighbor_indices = neighbor_indices
 
         # embed relative distances
