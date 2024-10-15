@@ -1093,7 +1093,7 @@ class Equiformer(nn.Module):
         # add self loops to edge index if attention used self loops
 
         if self.layers.blocks[0][0].attend_self:  # 1st layer attention module
-            self_loops = torch.arange(neigh.shape[-2])
+            self_loops = torch.arange(neigh.shape[-2]).to(neigh.device)
             self_loops = rearrange(self_loops, 'n -> 1 n 1')
             neigh = torch.cat([self_loops, neigh], dim=-1)
 
